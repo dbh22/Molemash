@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Mole Mash</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="data:image/svg+xml;utf8,
+<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'>
+<rect width='100%' height='100%' fill='%2387f5dc'/>
+<text x='50%' y='55%' font-size='110' text-anchor='middle'>🐹</text>
+</svg>">
+<style>
+  :root { --bg:#0f172a; --card:#1f2937; --ink:#e5e7eb; --accent:#22c55e; --warn:#f43f5e; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html,body { height:100%; margin:0; background:linear-gradient(180deg,#0ea5e922,#8b5cf622), var(--bg); color:var(--ink); font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: env(safe-area-inset-top) 16px 24px; }
+  header { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+  .pill { background:#ffffff14; padding:8px 12px; border-radius:999px; font-variant-numeric:tabular-nums; }
+  .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin-top:12px; }
+  .hole { aspect-ratio:1/1; border-radius:14px; background:linear-gradient(180deg,#5b3a2a33,#00000022), #3f2d23; display:grid; place-items:center; font-size:44px; }
+  .hole.disabled { opacity:.6; pointer-events:none; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-top:12px; }
+  button { border:0; border-radius:12px; padding:10px 14px; font-weight:600; background:#ffffff14; color:var(--ink); }
+  button.primary { background: var(--accent); color:#052e16; }
+  button.warn { background: var(--warn); color:white; }
+  .hint { opacity:.8; font-size:13px; margin-top:8px; }
+  .gameover { text-align:center; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="pill">Score: <span id="score">0</span></div>
+    <div class="pill">High: <span id="high">0</span></div>
+    <div class="pill">Lives: <span id="lives">3</span></div>
+    <div style="flex:1"></div>
+    <button id="pauseBtn">Pause</button>
+  </header>
+
+  <div id="grid" class="grid" aria-label="Mole grid"></div>
+
+  <div class="toolbar">
+    <div class="pill" id="levelTag">Easy</div>
+    <div style="flex:1"></div>
+    <button id="restartBtn">Restart</button>
+  </div>
+
+  <div id="over" class="gameover" hidden>
+    <h2>Game Over</h2>
+    <p>Final Score: <span id="final">0</span></p>
+    <button class="primary" id="againBtn">Play Again</button>
+  </div>
+
+  <p class="hint">Tap the 🐹 before it drops. Misses cost lives. Difficulty ramps every 5 points.</p>
+</div>
+
+<script>
+(() => {
+  // --- State
+  const rows = 4, cols = 3;
+  const gridEl = document.getElementById('grid');
+  const scoreEl = document.getElementById('score');
+  const highEl  = document.getElementById('high');
+  const livesEl = document.getElementById('lives');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const restartBtn = document.getElementById('restartBtn');
+  const overEl = document.getElementById('over');
+  const finalEl = document.getElementById('final');
+  const againBtn = document.getElementById('againBtn');
+  const levelTag = document.getElementById('levelTag');
+
+  let cells = [];
+  let score = 0, lives = 3, level = 1;
+  let spawnInterval = 900, upDuration = 1200;
+  const minSpawn = 350, minUp = 500;
+  let timers = { spawn:null, tick:null };
+  let paused = false, gameOver = false;
+  let high = +localStorage.getItem('mm_high') || 0;
+  highEl.textContent = high;
+
+  // --- Build grid
+  for (let i=0;i<rows*cols;i++){
+    const d = document.createElement('button');
+    d.className = 'hole';
+    d.setAttribute('aria-label','Hole');
+    d.innerHTML = '🕳️';
+    gridEl.appendChild(d);
+    cells.push({el:d, up:false, locked:false, since:0});
+  }
+
+  function setLives(v){ lives=v; livesEl.textContent=v; if(v<=0){ endGame(); } }
+  function setScore(v){ score=v; scoreEl.textContent=v; if (score>high){ high=score; localStorage.setItem('mm_high',high); highEl.textContent=high; } }
+  function setLevel(newLevel){
+    level=newLevel;
+    levelTag.textContent = level<3?'Easy':(level<6?'Medium':'Hard');
+  }
+
+  // hit handling
+  cells.forEach((c, idx) => {
+    c.el.addEventListener('click', () => {
+      if (gameOver || paused || !c.up || c.locked) return;
+      c.locked = true; c.up = false; c.el.innerHTML = '🕳️'; 
+      setScore(score+1);
+      adjustDifficulty(score);
+      setTimeout(()=>c.locked=false,150);
+    }, {passive:true});
+  });
+
+  function raiseRandom(){
+    const options = cells.filter(c=>!c.up && !c.locked);
+    if(!options.length) return;
+    const c = options[Math.floor(Math.random()*options.length)];
+    c.up = true; c.since = performance.now();
+    c.el.innerHTML = '🐹';
+  }
+
+  function tick(){
+    const now = performance.now();
+    cells.forEach(c=>{
+      if(c.up && now - c.since >= upDuration){
+        c.up=false; c.el.innerHTML='🕳️';
+        setLives(lives-1);
+      }
+    });
+  }
+
+  function loop(){
+    clearInterval(timers.spawn); clearInterval(timers.tick);
+    timers.spawn = setInterval(raiseRandom, spawnInterval);
+    timers.tick  = setInterval(tick, 100);
+  }
+
+  function pause(){
+    paused = true; clearInterval(timers.spawn); clearInterval(timers.tick);
+    pauseBtn.textContent = 'Play';
+  }
+  function resume(){
+    if (gameOver) return;
+    paused = false; loop(); pauseBtn.textContent = 'Pause';
+  }
+
+  function restart(){
+    gameOver=false; overEl.hidden=true;
+    setScore(0); setLives(3); setLevel(1);
+    spawnInterval=900; upDuration=1200;
+    cells.forEach(c=>{ c.up=false; c.locked=false; c.el.innerHTML='🕳️'; });
+    resume();
+  }
+
+  function endGame(){
+    gameOver=true; clearInterval(timers.spawn); clearInterval(timers.tick);
+    finalEl.textContent = score;
+    overEl.hidden=false;
+  }
+
+  function adjustDifficulty(s){
+    const newLevel = 1 + Math.floor(s/5);
+    if (newLevel !== level){
+      setLevel(newLevel);
+      spawnInterval = Math.max(minSpawn, Math.floor(spawnInterval*0.92));
+      upDuration    = Math.max(minUp,    Math.floor(upDuration*0.94));
+      if(!paused && !gameOver) loop();
+    }
+  }
+
+  pauseBtn.addEventListener('click', ()=> paused ? resume() : pause());
+  restartBtn.addEventListener('click', restart);
+  againBtn.addEventListener('click', restart);
+
+  // Start
+  resume();
+})();
+</script>
+</body>
+</html>
